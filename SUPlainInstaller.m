@@ -5,6 +5,11 @@
 //  Created by Andy Matuschak on 4/10/08.
 //  Copyright 2008 Andy Matuschak. All rights reserved.
 //
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_6
+#import <Security/SecRequirement.h>
+#import <Security/SecCode.h>
+#import <Security/SecStaticCode.h>
+#endif
 
 #import "SUPlainInstaller.h"
 #import "SUPlainInstallerInternals.h"
@@ -53,6 +58,56 @@ static NSString * const SUInstallerErrorKey = @"SUInstallerError";
 		return;
 	}
     
+    // Ensure that a signed update is actually the same app as this one.
+#if MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_6
+    if (SecStaticCodeCreateWithPath != NULL) {
+        if ([host boolForInfoDictionaryKey: @"SUCheckTargetSignature"]) {
+            //get the host's code object
+            SecStaticCodeRef thisApp = NULL;
+            NSURL *thisAppURL = [NSURL fileURLWithPath:[host bundlePath]];
+            OSStatus signResult = SecStaticCodeCreateWithPath((CFURLRef)thisAppURL, kSecCSDefaultFlags, &thisApp);
+            if (signResult != errSecSuccess) {
+                NSString *errorMessage = [NSString stringWithFormat:@"Sparkle Updater: Cannot retrieve signing information for application %@ (got error %d)", thisAppURL, signResult];
+                NSError *error = [NSError errorWithDomain:SUSparkleErrorDomain code:SUSignatureError userInfo:[NSDictionary dictionaryWithObject:errorMessage forKey:NSLocalizedDescriptionKey]];
+                [self finishInstallationWithResult:NO host:host error:error delegate:delegate];
+                return;
+            }
+            //find the host's designated requirement
+            SecRequirementRef hostDesignated = NULL;
+            signResult = SecCodeCopyDesignatedRequirement(thisApp, kSecCSDefaultFlags, &hostDesignated);
+            CFRelease(thisApp);
+            if (signResult != errSecSuccess) {
+                NSString *errorMessage = [NSString stringWithFormat:@"Sparkle Updater: Cannot find designated requirement for application %@ (got error %d)", thisAppURL, signResult];
+                NSError *error = [NSError errorWithDomain:SUSparkleErrorDomain code:SUSignatureError userInfo:[NSDictionary dictionaryWithObject:errorMessage forKey:NSLocalizedDescriptionKey]];
+                [self finishInstallationWithResult:NO host:host error:error delegate:delegate];
+                return;
+            }
+            //get the new product's code object
+            SecStaticCodeRef newApp = NULL;
+            NSURL *newAppURL = [NSURL fileURLWithPath:path];
+            signResult = SecStaticCodeCreateWithPath((CFURLRef)newAppURL, kSecCSDefaultFlags, &newApp);
+            if (signResult != errSecSuccess) {
+                NSString *errorMessage = [NSString stringWithFormat:@"Sparkle Updater: Cannot retrieve signing information for application %@ (got error %d)", newAppURL, signResult];
+                NSError *error = [NSError errorWithDomain:SUSparkleErrorDomain code:SUSignatureError userInfo:[NSDictionary dictionaryWithObject:errorMessage forKey:NSLocalizedDescriptionKey]];
+                [self finishInstallationWithResult:NO host:host error:error delegate:delegate];
+                return;
+            }
+            /*Test the new app against the host's designated requirement. In other
+             *words, find out whether the app we're being asked to install is really
+             *another manifestation of the host app.
+             */
+            NSError *validityError = nil;
+            signResult = SecStaticCodeCheckValidityWithErrors(newApp, kSecCSDefaultFlags, hostDesignated, (CFErrorRef *)&validityError);
+            CFRelease(hostDesignated);
+            CFRelease(newApp);
+            if (signResult != errSecSuccess) {
+                [self finishInstallationWithResult:NO host:host error:validityError delegate:delegate];
+                CFRelease(validityError);
+                return;
+            }
+        }
+    }
+#endif
     NSString *targetPath = [host bundlePath];
     NSString *tempName = [self temporaryNameForPath:targetPath];
 	NSDictionary *info = [NSDictionary dictionaryWithObjectsAndKeys:path, SUInstallerPathKey, targetPath, SUInstallerTargetPathKey, tempName, SUInstallerTempNameKey, host, SUInstallerHostKey, delegate, SUInstallerDelegateKey, nil];
